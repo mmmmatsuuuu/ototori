@@ -1,0 +1,18 @@
+services:
+  dev:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "5173:5173"
+    volumes:
+      # ソースはホストからマウント(編集はホスト側、実行はコンテナ内)
+      - ./:/app
+      # node_modules はコンテナ内の名前付きボリュームに隔離(ホストを汚さない)
+      - ototori_node_modules:/app/node_modules
+    environment:
+      # macOS のバインドマウント越しでも HMR の変更検知を確実にする
+      - CHOKIDAR_USEPOLLING=true
+
+volumes:
+  ototori_node_modules:

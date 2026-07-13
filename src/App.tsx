@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AudioEngine, type EngineState } from './audio/AudioEngine'
+import { AudioEngine, type EngineState, type PrepareState } from './audio/AudioEngine'
 import { Waveform } from './components/Waveform'
 import { makeSampleWav } from './audio/sampleTone'
 
-const TEMPO_PRESETS = [0.5, 0.65, 0.8, 1.0]
+const TEMPO_PRESETS = [0.35, 0.4, 0.5, 0.65, 0.8, 1.0]
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0
@@ -26,10 +26,12 @@ export default function App() {
   const [loopEnabled, setLoopEnabled] = useState(false)
   const [loopStart, setLoopStart] = useState(0)
   const [loopEnd, setLoopEnd] = useState(0)
+  const [prepare, setPrepare] = useState<PrepareState>('idle')
   const [error, setError] = useState<string>('')
 
   useEffect(() => {
     engine.onStateChange = (s) => setState(s)
+    engine.onPrepareChange = (s) => setPrepare(s)
     if (import.meta.env.DEV) {
       ;(window as unknown as { __engine: AudioEngine }).__engine = engine
     }
@@ -171,7 +173,19 @@ export default function App() {
           <div className="temporow">
             <div className="tlabel">
               <span>テンポ <strong>{Math.round(tempo * 100)}%</strong></span>
-              <span className="warn">暫定：ピッチも変化（次でRubberband化）</span>
+              {tempo === 1 ? (
+                <span className="mode">等速</span>
+              ) : loopEnabled ? (
+                prepare === 'rendering' ? (
+                  <span className="mode rendering">高音質生成中…</span>
+                ) : prepare === 'error' ? (
+                  <span className="warn">生成に失敗しました</span>
+                ) : (
+                  <span className="mode ok">ピッチ維持（Rubberband）</span>
+                )
+              ) : (
+                <span className="warn">プレビュー：ピッチも変化（ループONで高音質）</span>
+              )}
             </div>
             <input
               type="range" min={0.25} max={1} step={0.01} value={tempo}

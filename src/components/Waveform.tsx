@@ -1,14 +1,17 @@
 import { useEffect, useRef } from 'react'
 import type { AudioEngine } from '../audio/AudioEngine'
 
+export type WaveMode = 'explore' | 'practice'
+
 type Props = {
   engine: AudioEngine
   buffer: AudioBuffer | null
-  loopStart: number
-  loopEnd: number
-  loopEnabled: boolean
+  mode: WaveMode
+  anchor: number // 起点
+  endPoint: number | null // 終点(練習モードのみ)
   onSeek: (sec: number) => void
-  onSetLoop: (start: number, end: number) => void
+  onMoveAnchor: (sec: number) => void
+  onMoveEnd: (sec: number) => void
 }
 
 type Peaks = { min: Float32Array; max: Float32Array; width: number; buffer: AudioBuffer }
@@ -35,14 +38,14 @@ function computePeaks(buffer: AudioBuffer, width: number): Peaks {
   return { min, max, width, buffer }
 }
 
-const HANDLE_HIT_PX = 12
+const HANDLE_HIT_PX = 14
 
-export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSeek, onSetLoop }: Props) {
+export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaksRef = useRef<Peaks | null>(null)
-  // 最新の props をアニメーションループから参照するための ref
-  const stateRef = useRef({ buffer, loopStart, loopEnd, loopEnabled })
-  stateRef.current = { buffer, loopStart, loopEnd, loopEnabled }
+  // 最新の props をアニメーションループ/ポインタ処理から参照するための ref
+  const stateRef = useRef({ buffer, mode, anchor, endPoint })
+  stateRef.current = { buffer, mode, anchor, endPoint }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -50,7 +53,7 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
     let raf = 0
 
     const draw = () => {
-      const { buffer, loopStart, loopEnd, loopEnabled } = stateRef.current
+      const { buffer, anchor, endPoint } = stateRef.current
       const dpr = window.devicePixelRatio || 1
       const cssW = canvas.clientWidth
       const cssH = canvas.clientHeight
@@ -82,10 +85,10 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
       }
       const peaks = peaksRef.current
 
-      // ループ範囲の塗り
-      if (loopEnabled) {
+      // 区間の塗り(終点が確定しているとき)
+      if (endPoint != null) {
         ctx.fillStyle = cLoop
-        ctx.fillRect(xOf(loopStart), 0, xOf(loopEnd) - xOf(loopStart), h)
+        ctx.fillRect(xOf(anchor), 0, xOf(endPoint) - xOf(anchor), h)
       }
 
       // 中心線
@@ -105,15 +108,24 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
         ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1))
       }
 
-      // ループ境界ハンドル
-      for (const [sec, color] of [[loopStart, cWave], [loopEnd, cWave]] as const) {
-        ctx.strokeStyle = color
+      // 起点マーカー(常時) + 終点マーカー(あれば)
+      const marker = (sec: number, withKnob: boolean) => {
+        const x = xOf(sec)
+        ctx.strokeStyle = cWave
         ctx.lineWidth = 2 * dpr
         ctx.beginPath()
-        ctx.moveTo(xOf(sec), 0)
-        ctx.lineTo(xOf(sec), h)
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, h)
         ctx.stroke()
+        if (withKnob) {
+          ctx.fillStyle = cWave
+          ctx.beginPath()
+          ctx.arc(x, 10 * dpr, 5 * dpr, 0, Math.PI * 2)
+          ctx.fill()
+        }
       }
+      marker(anchor, true)
+      if (endPoint != null) marker(endPoint, true)
 
       // 再生ヘッド
       const pos = engine.getPosition()
@@ -130,11 +142,13 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
     return () => cancelAnimationFrame(raf)
   }, [engine])
 
-  // ポインタ操作: クリック=シーク、ドラッグ=範囲選択、境界付近=ハンドル移動
+  // ポインタ操作:
+  //  - 起点/終点ハンドル付近のドラッグ → その点を移動
+  //  - それ以外(本体): 探索モードは起点を移動、練習モードはシーク
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    let mode: 'none' | 'seek' | 'start' | 'end' | 'select' = 'none'
+    let hit: 'none' | 'anchor' | 'end' | 'body' = 'none'
     let downX = 0
     let moved = false
 
@@ -149,34 +163,44 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
       const dur = stateRef.current.buffer?.duration ?? 1
       return (sec / dur) * rect.width + rect.left
     }
+    const clampAnchor = (sec: number) => {
+      const { endPoint, buffer } = stateRef.current
+      const hi = endPoint != null ? endPoint - 0.02 : (buffer?.duration ?? 0)
+      return Math.max(0, Math.min(sec, hi))
+    }
+    const clampEnd = (sec: number) => {
+      const { anchor, buffer } = stateRef.current
+      return Math.min(buffer?.duration ?? 0, Math.max(sec, anchor + 0.02))
+    }
 
     const onDown = (e: PointerEvent) => {
       if (!stateRef.current.buffer) return
       canvas.setPointerCapture(e.pointerId)
       downX = e.clientX
       moved = false
-      const { loopStart, loopEnd } = stateRef.current
-      if (Math.abs(e.clientX - pxOf(loopStart)) <= HANDLE_HIT_PX) mode = 'start'
-      else if (Math.abs(e.clientX - pxOf(loopEnd)) <= HANDLE_HIT_PX) mode = 'end'
-      else mode = 'seek'
+      const { anchor, endPoint } = stateRef.current
+      if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) hit = 'anchor'
+      else if (endPoint != null && Math.abs(e.clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) hit = 'end'
+      else hit = 'body'
     }
     const onMove = (e: PointerEvent) => {
-      if (mode === 'none') return
+      if (hit === 'none') return
       if (Math.abs(e.clientX - downX) > 4) moved = true
       const sec = secAt(e.clientX)
-      const { loopStart, loopEnd } = stateRef.current
-      if (mode === 'start') onSetLoop(Math.min(sec, loopEnd - 0.02), loopEnd)
-      else if (mode === 'end') onSetLoop(loopStart, Math.max(sec, loopStart + 0.02))
-      else if (mode === 'seek' && moved) {
-        mode = 'select'
-        onSetLoop(secAt(downX), sec)
-      } else if (mode === 'select') {
-        onSetLoop(secAt(downX), sec)
+      if (hit === 'anchor') onMoveAnchor(clampAnchor(sec))
+      else if (hit === 'end') onMoveEnd(clampEnd(sec))
+      else if (moved) {
+        if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
+        else onSeek(sec)
       }
     }
     const onUp = (e: PointerEvent) => {
-      if (mode === 'seek' && !moved) onSeek(secAt(e.clientX))
-      mode = 'none'
+      if (hit === 'body' && !moved) {
+        const sec = secAt(e.clientX)
+        if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
+        else onSeek(sec)
+      }
+      hit = 'none'
     }
     canvas.addEventListener('pointerdown', onDown)
     canvas.addEventListener('pointermove', onMove)
@@ -186,7 +210,7 @@ export function Waveform({ engine, buffer, loopStart, loopEnd, loopEnabled, onSe
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp)
     }
-  }, [onSeek, onSetLoop])
+  }, [onSeek, onMoveAnchor, onMoveEnd])
 
   return <canvas ref={canvasRef} className="waveform" aria-label="波形" />
 }

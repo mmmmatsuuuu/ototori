@@ -112,11 +112,20 @@ body {
 .btn.primary { background: var(--accent); color: #0f1115; border-color: transparent; }
 .btn.on { background: var(--accent2); color: #0f1115; border-color: transparent; }
 .btn.sample { flex: none; align-self: flex-start; padding: 10px 16px; font-size: 13px; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn:disabled:hover { border-color: var(--line); }
 
-.looprow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; }
-.looprow .lbl { color: var(--dim); }
-.looprow .range { font-variant-numeric: tabular-nums; }
-.looprow .hint { color: var(--dim); font-size: 12px; }
+.modechip {
+  margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); font-weight: 600;
+}
+.modechip.explore { color: var(--accent2); }
+.modechip.practice { color: #0f1115; background: var(--accent); border-color: transparent; }
+
+.seginfo { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 13px; }
+.seginfo .lbl { color: var(--dim); }
+.seginfo .range { font-variant-numeric: tabular-nums; }
+.seginfo .hint { color: var(--dim); font-size: 12px; flex-basis: 100%; }
 
 .temporow {
   display: flex; flex-direction: column; gap: 8px;

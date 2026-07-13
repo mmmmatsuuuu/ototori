@@ -126,6 +126,15 @@ body {
 .tlabel { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 14px; }
 .tlabel > span:first-child { white-space: nowrap; }
 .tlabel .warn { font-size: 11px; color: var(--accent2); }
+.tlabel .mode { font-size: 11px; color: var(--dim); }
+.tlabel .mode.ok { color: var(--accent); }
+.tlabel .mode.rendering { color: var(--accent2); }
+.tlabel .mode.rendering::before {
+  content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px;
+  vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .temporow input[type="range"] { width: 100%; accent-color: var(--accent); }
 .presets { display: flex; gap: 8px; }
 .chip {

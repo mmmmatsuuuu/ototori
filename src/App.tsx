@@ -3,7 +3,7 @@ import { AudioEngine, type EngineState, type PrepareState } from './audio/AudioE
 import { Waveform } from './components/Waveform'
 import { makeSampleWav } from './audio/sampleTone'
 
-const TEMPO_PRESETS = [0.5, 0.65, 0.8, 1.0]
+const TEMPO_PRESETS = [0.35, 0.4, 0.5, 0.65, 0.8, 1.0]
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0

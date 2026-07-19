@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AudioEngine } from '../audio/AudioEngine'
 
 export type WaveMode = 'explore' | 'practice'
@@ -14,38 +14,73 @@ type Props = {
   onMoveEnd: (sec: number) => void
 }
 
-type Peaks = { min: Float32Array; max: Float32Array; width: number; buffer: AudioBuffer }
+type Peaks = { min: Float32Array; max: Float32Array; width: number; vs: number; ve: number; buffer: AudioBuffer }
 
-// バッファから列ごとの min/max ピークを計算(重いのでキャッシュする)
-function computePeaks(buffer: AudioBuffer, width: number): Peaks {
+// 表示範囲[startSample,endSample]を width 列の min/max ピークに畳む(重いのでキャッシュ)
+function computePeaks(buffer: AudioBuffer, width: number, startSample: number, endSample: number): Peaks {
   const data = buffer.getChannelData(0)
   const min = new Float32Array(width)
   const max = new Float32Array(width)
-  const step = data.length / width
+  const s = Math.max(0, Math.min(startSample, data.length))
+  const e = Math.max(s, Math.min(endSample, data.length))
+  const step = (e - s) / width
   for (let x = 0; x < width; x++) {
-    const start = Math.floor(x * step)
-    const end = Math.min(data.length, Math.floor((x + 1) * step))
+    const a = Math.floor(s + x * step)
+    const b = Math.min(data.length, Math.max(a + 1, Math.floor(s + (x + 1) * step)))
     let lo = 1
     let hi = -1
-    for (let i = start; i < end; i++) {
+    for (let i = a; i < b; i++) {
       const v = data[i]
       if (v < lo) lo = v
       if (v > hi) hi = v
     }
-    min[x] = lo
-    max[x] = hi
+    min[x] = lo === 1 && hi === -1 ? 0 : lo
+    max[x] = lo === 1 && hi === -1 ? 0 : hi
   }
-  return { min, max, width, buffer }
+  return { min, max, width, vs: startSample, ve: endSample, buffer }
 }
 
 const HANDLE_HIT_PX = 14
+const MIN_SPAN = 0.03 // 最大ズーム時の表示秒数
 
 export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaksRef = useRef<Peaks | null>(null)
-  // 最新の props をアニメーションループ/ポインタ処理から参照するための ref
+  const [zoomed, setZoomed] = useState(false)
+
+  // 最新の props をアニメーション/ポインタ処理から参照する ref
   const stateRef = useRef({ buffer, mode, anchor, endPoint })
   stateRef.current = { buffer, mode, anchor, endPoint }
+
+  // 表示ウィンドウ(秒)。描画・ポインタ判定はすべてこれ基準。
+  const viewRef = useRef({ start: 0, end: 0 })
+  const pointersRef = useRef(new Map<number, number>()) // pointerId -> clientX
+  const pinchRef = useRef<{ dist0: number; span0: number; timeAtMid: number } | null>(null)
+  const suppressFollowUntilRef = useRef(0)
+
+  const syncZoomed = (span: number, dur: number) => setZoomed(span < dur - 1e-4)
+
+  // バッファが変わったら全体表示にリセット
+  useEffect(() => {
+    const dur = buffer?.duration ?? 0
+    viewRef.current = { start: 0, end: dur }
+    pointersRef.current.clear()
+    pinchRef.current = null
+    setZoomed(false)
+  }, [buffer])
+
+  const resetView = () => {
+    const dur = buffer?.duration ?? 0
+    viewRef.current = { start: 0, end: dur }
+    setZoomed(false)
+  }
+
+  // 開発時のみ表示ウィンドウをデバッグ用に露出
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      ;(window as unknown as { __wave: typeof viewRef }).__wave = viewRef
+    }
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -77,13 +112,32 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
         return
       }
       const dur = buffer.duration
-      const xOf = (sec: number) => (sec / dur) * w
+      const pos = engine.getPosition()
 
-      // ピークのキャッシュ(バッファor幅が変わったら再計算)
-      if (!peaksRef.current || peaksRef.current.buffer !== buffer || peaksRef.current.width !== w) {
-        peaksRef.current = computePeaks(buffer, w)
+      // 再生ヘッド自動追従(再生中・ズーム中・無操作時のみ)
+      let { start: vs, end: ve } = viewRef.current
+      let span = ve - vs
+      if (
+        engine.state === 'playing' && span < dur - 1e-6 &&
+        pointersRef.current.size === 0 && performance.now() > suppressFollowUntilRef.current &&
+        (pos < vs || pos > ve)
+      ) {
+        vs = Math.max(0, Math.min(pos - 0.05 * span, dur - span))
+        ve = vs + span
+        viewRef.current = { start: vs, end: ve }
       }
-      const peaks = peaksRef.current
+      span = ve - vs || dur
+      const xOf = (sec: number) => ((sec - vs) / span) * w
+
+      // 表示範囲のピーク(ビュー/幅が変わったら再計算)
+      const sr = buffer.sampleRate
+      const s0 = Math.floor(vs * sr)
+      const e0 = Math.ceil(ve * sr)
+      const pk = peaksRef.current
+      if (!pk || pk.buffer !== buffer || pk.width !== w || pk.vs !== s0 || pk.ve !== e0) {
+        peaksRef.current = computePeaks(buffer, w, s0, e0)
+      }
+      const peaks = peaksRef.current!
 
       // 区間の塗り(終点が確定しているとき)
       if (endPoint != null) {
@@ -99,7 +153,7 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       ctx.lineTo(w, h / 2)
       ctx.stroke()
 
-      // 波形
+      // 波形(列は表示範囲に対応)
       ctx.fillStyle = cWave
       const mid = h / 2
       for (let x = 0; x < peaks.width; x++) {
@@ -108,33 +162,34 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
         ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1))
       }
 
-      // 起点マーカー(常時) + 終点マーカー(あれば)
-      const marker = (sec: number, withKnob: boolean) => {
+      // 起点/終点マーカー
+      const marker = (sec: number) => {
         const x = xOf(sec)
+        if (x < -2 || x > w + 2) return
         ctx.strokeStyle = cWave
         ctx.lineWidth = 2 * dpr
         ctx.beginPath()
         ctx.moveTo(x, 0)
         ctx.lineTo(x, h)
         ctx.stroke()
-        if (withKnob) {
-          ctx.fillStyle = cWave
-          ctx.beginPath()
-          ctx.arc(x, 10 * dpr, 5 * dpr, 0, Math.PI * 2)
-          ctx.fill()
-        }
+        ctx.fillStyle = cWave
+        ctx.beginPath()
+        ctx.arc(x, 10 * dpr, 5 * dpr, 0, Math.PI * 2)
+        ctx.fill()
       }
-      marker(anchor, true)
-      if (endPoint != null) marker(endPoint, true)
+      marker(anchor)
+      if (endPoint != null) marker(endPoint)
 
       // 再生ヘッド
-      const pos = engine.getPosition()
-      ctx.strokeStyle = cHead
-      ctx.lineWidth = 2 * dpr
-      ctx.beginPath()
-      ctx.moveTo(xOf(pos), 0)
-      ctx.lineTo(xOf(pos), h)
-      ctx.stroke()
+      const hx = xOf(pos)
+      if (hx >= -2 && hx <= w + 2) {
+        ctx.strokeStyle = cHead
+        ctx.lineWidth = 2 * dpr
+        ctx.beginPath()
+        ctx.moveTo(hx, 0)
+        ctx.lineTo(hx, h)
+        ctx.stroke()
+      }
 
       raf = requestAnimationFrame(draw)
     }
@@ -143,25 +198,28 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
   }, [engine])
 
   // ポインタ操作:
-  //  - 起点/終点ハンドル付近のドラッグ → その点を移動
-  //  - それ以外(本体): 探索モードは起点を移動、練習モードはシーク
+  //  1本指 → 従来操作(タップ=シーク/起点移動、ハンドル=微調整)
+  //  2本指 → ピンチでズーム + ドラッグでパン
+  //  ホイール → Ctrl でズーム、Shift/横スクロールでパン(PC)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    let hit: 'none' | 'anchor' | 'end' | 'body' = 'none'
+    let g: 'none' | 'anchor' | 'end' | 'body' | 'pinch' | 'suppress' = 'none'
     let downX = 0
     let moved = false
 
+    const rectOf = () => canvas.getBoundingClientRect()
     const secAt = (clientX: number) => {
-      const rect = canvas.getBoundingClientRect()
+      const { start, end } = viewRef.current
+      const rect = rectOf()
       const dur = stateRef.current.buffer?.duration ?? 0
       const ratio = (clientX - rect.left) / rect.width
-      return Math.max(0, Math.min(dur, ratio * dur))
+      return Math.max(0, Math.min(dur, start + ratio * (end - start)))
     }
     const pxOf = (sec: number) => {
-      const rect = canvas.getBoundingClientRect()
-      const dur = stateRef.current.buffer?.duration ?? 1
-      return (sec / dur) * rect.width + rect.left
+      const { start, end } = viewRef.current
+      const rect = rectOf()
+      return rect.left + ((sec - start) / (end - start || 1)) * rect.width
     }
     const clampAnchor = (sec: number) => {
       const { endPoint, buffer } = stateRef.current
@@ -172,45 +230,132 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       const { anchor, buffer } = stateRef.current
       return Math.min(buffer?.duration ?? 0, Math.max(sec, anchor + 0.02))
     }
+    const setView = (start: number, span: number) => {
+      const dur = stateRef.current.buffer?.duration ?? 0
+      const sp = Math.max(Math.min(MIN_SPAN, dur), Math.min(span, dur))
+      const st = Math.max(0, Math.min(start, dur - sp))
+      viewRef.current = { start: st, end: st + sp }
+      syncZoomed(sp, dur)
+    }
+
+    const startPinch = (xA: number, xB: number) => {
+      const rect = rectOf()
+      const mid = (xA + xB) / 2
+      const { start, end } = viewRef.current
+      pinchRef.current = {
+        dist0: Math.abs(xA - xB) || 1,
+        span0: end - start,
+        timeAtMid: start + ((mid - rect.left) / rect.width) * (end - start),
+      }
+    }
+    const updatePinch = () => {
+      const xs = [...pointersRef.current.values()]
+      const p = pinchRef.current
+      if (xs.length < 2 || !p) return
+      const rect = rectOf()
+      const dist = Math.abs(xs[0] - xs[1]) || 1
+      const mid = (xs[0] + xs[1]) / 2
+      const span = p.span0 * (p.dist0 / dist) // 指が開く(dist大)→ span縮小=拡大
+      const frac = (mid - rect.left) / rect.width
+      setView(p.timeAtMid - frac * span, span)
+      suppressFollowUntilRef.current = performance.now() + 1200
+    }
 
     const onDown = (e: PointerEvent) => {
       if (!stateRef.current.buffer) return
+      pointersRef.current.set(e.pointerId, e.clientX)
       canvas.setPointerCapture(e.pointerId)
+      if (pointersRef.current.size === 2) {
+        const xs = [...pointersRef.current.values()]
+        startPinch(xs[0], xs[1])
+        g = 'pinch'
+        return
+      }
+      if (pointersRef.current.size !== 1) return
       downX = e.clientX
       moved = false
       const { anchor, endPoint } = stateRef.current
-      if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) hit = 'anchor'
-      else if (endPoint != null && Math.abs(e.clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) hit = 'end'
-      else hit = 'body'
+      if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) g = 'anchor'
+      else if (endPoint != null && Math.abs(e.clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) g = 'end'
+      else g = 'body'
     }
     const onMove = (e: PointerEvent) => {
-      if (hit === 'none') return
+      if (!pointersRef.current.has(e.pointerId)) return
+      pointersRef.current.set(e.pointerId, e.clientX)
+      if (g === 'pinch') { updatePinch(); return }
+      if (g === 'none' || g === 'suppress') return
       if (Math.abs(e.clientX - downX) > 4) moved = true
       const sec = secAt(e.clientX)
-      if (hit === 'anchor') onMoveAnchor(clampAnchor(sec))
-      else if (hit === 'end') onMoveEnd(clampEnd(sec))
-      else if (moved) {
+      if (g === 'anchor') onMoveAnchor(clampAnchor(sec))
+      else if (g === 'end') onMoveEnd(clampEnd(sec))
+      else if (g === 'body' && moved) {
         if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
         else onSeek(sec)
       }
     }
-    const onUp = (e: PointerEvent) => {
-      if (hit === 'body' && !moved) {
+    const endPointer = (e: PointerEvent, tap: boolean) => {
+      pointersRef.current.delete(e.pointerId)
+      try { canvas.releasePointerCapture(e.pointerId) } catch { /* noop */ }
+      const remaining = pointersRef.current.size
+      if (g === 'pinch') {
+        if (remaining < 2) pinchRef.current = null
+        g = remaining > 0 ? 'suppress' : 'none'
+        suppressFollowUntilRef.current = performance.now() + 1200
+        return
+      }
+      if (g === 'suppress') { if (remaining === 0) g = 'none'; return }
+      if (tap && g === 'body' && !moved) {
         const sec = secAt(e.clientX)
         if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
         else onSeek(sec)
       }
-      hit = 'none'
+      g = 'none'
     }
+    const onUp = (e: PointerEvent) => endPointer(e, true)
+    const onCancel = (e: PointerEvent) => endPointer(e, false)
+
+    const onWheel = (e: WheelEvent) => {
+      const dur = stateRef.current.buffer?.duration ?? 0
+      if (!dur) return
+      const { start, end } = viewRef.current
+      const span = end - start
+      if (e.ctrlKey) {
+        e.preventDefault()
+        const rect = rectOf()
+        const frac = (e.clientX - rect.left) / rect.width
+        const timeAt = start + frac * span
+        const nspan = span * Math.exp(e.deltaY * 0.0015) // 上スクロール(deltaY<0)で拡大
+        setView(timeAt - frac * nspan, nspan)
+        suppressFollowUntilRef.current = performance.now() + 1200
+      } else if (e.shiftKey || e.deltaX !== 0) {
+        e.preventDefault()
+        const rect = rectOf()
+        const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY
+        setView(start + (dx / rect.width) * span, span)
+        suppressFollowUntilRef.current = performance.now() + 1200
+      }
+    }
+
     canvas.addEventListener('pointerdown', onDown)
     canvas.addEventListener('pointermove', onMove)
     canvas.addEventListener('pointerup', onUp)
+    canvas.addEventListener('pointercancel', onCancel)
+    canvas.addEventListener('wheel', onWheel, { passive: false })
     return () => {
       canvas.removeEventListener('pointerdown', onDown)
       canvas.removeEventListener('pointermove', onMove)
       canvas.removeEventListener('pointerup', onUp)
+      canvas.removeEventListener('pointercancel', onCancel)
+      canvas.removeEventListener('wheel', onWheel)
     }
   }, [onSeek, onMoveAnchor, onMoveEnd])
 
-  return <canvas ref={canvasRef} className="waveform" aria-label="波形" />
+  return (
+    <div className="wavewrap">
+      <canvas ref={canvasRef} className="waveform" aria-label="波形" />
+      {zoomed && (
+        <button className="wavereset" onClick={resetView} type="button">全体</button>
+      )}
+    </div>
+  )
 }

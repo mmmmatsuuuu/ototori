@@ -13,6 +13,7 @@
   --axis: rgba(255, 255, 255, 0.14);
   --scrim-top: rgba(15, 17, 21, 0.86);
   --scrim-bottom: rgba(15, 17, 21, 0.92);
+  --drawer-w: min(330px, 84vw);
 }
 
 * { box-sizing: border-box; }
@@ -65,7 +66,7 @@ body {
   width: 40px; height: 40px;
   display: grid; place-items: center;
   font-size: 20px; line-height: 1;
-  border-radius: 12px;
+  border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(38, 43, 54, 0.55);
   color: var(--text);
@@ -121,6 +122,13 @@ body {
 }
 .dock > * { pointer-events: auto; }
 
+/* ドロワーを開いたらボタン群だけを左へ寄せ、開いたままでも操作できるようにする
+   (時刻表示は動かさず残す。幅に余裕のある横置き/PCのみ) */
+@media (min-width: 700px) {
+  .dock.shifted { z-index: 25; }
+  .dock.shifted .dockrow { transform: translateX(calc(-1 * var(--drawer-w))); }
+}
+
 .readout {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 12px;
@@ -131,13 +139,16 @@ body {
 
 /* 主要操作は右寄せでコンパクトに。半透明+ぼかしでシステムUI風に */
 /* 幅が足りないとき(縦向きなど)は折り返す */
-.dockrow { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.dockrow {
+  display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end;
+  transition: transform 0.22s ease;
+}
 
 .db {
   flex: 0 0 auto;
   min-height: 54px;
-  padding: 0 16px;
-  border-radius: 14px;
+  padding: 0 20px;
+  border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(38, 43, 54, 0.55);
   color: var(--text);
@@ -150,8 +161,9 @@ body {
 }
 .db.main { min-width: 116px; font-size: 15px; }
 .db.sub { min-width: 88px; font-size: 13px; font-weight: 600; color: var(--dim); }
-/* 設定(≡)は操作ボタンと区別できるよう正方形・少し離して置く */
-.db.menu { min-width: 54px; padding: 0; font-size: 20px; margin-right: 4px; color: var(--dim); }
+/* 設定(≡)は右端。操作ボタンと区別できるよう少し離して置く */
+.db.menu { min-width: 54px; padding: 0; font-size: 20px; margin-left: 4px; color: var(--dim); }
+.db.menu.on { background: rgba(255, 255, 255, 0.16); color: var(--text); }
 .db.play { background: rgba(93, 202, 165, 0.22); border-color: rgba(93, 202, 165, 0.5); color: var(--accent); }
 .db.go { background: rgba(240, 153, 123, 0.22); border-color: rgba(240, 153, 123, 0.5); color: var(--accent2); }
 .db:disabled { opacity: 0.3; cursor: default; }
@@ -164,16 +176,17 @@ body {
   position: absolute; inset: 0; z-index: 20;
   background: rgba(0, 0, 0, 0.45);
 }
+/* 右手で操作しやすいよう右から出す */
 .drawer {
   position: absolute;
-  top: 0; bottom: 0; left: 0;
+  top: 0; bottom: 0; right: 0;
   z-index: 30;
-  width: min(330px, 84vw);
+  width: var(--drawer-w);
   padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
-  padding-left: calc(16px + env(safe-area-inset-left));
+  padding-right: calc(16px + env(safe-area-inset-right));
   background: var(--panel);
-  border-right: 1px solid var(--line);
-  transform: translateX(-101%);
+  border-left: 1px solid var(--line);
+  transform: translateX(101%);
   transition: transform 0.22s ease;
   display: flex; flex-direction: column; gap: 16px;
   overflow-y: auto;
@@ -220,8 +233,8 @@ body {
 
 .drow {
   display: block; width: 100%; text-align: left;
-  padding: 13px 12px;
-  border-radius: 10px;
+  padding: 13px 18px;
+  border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
@@ -274,8 +287,8 @@ body {
 .dz-inner .note { font-size: 12px; color: var(--accent); }
 
 .ghost {
-  padding: 12px 18px;
-  border-radius: 12px;
+  padding: 12px 22px;
+  border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--panel2);
   color: var(--text);

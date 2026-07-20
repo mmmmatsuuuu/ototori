@@ -235,7 +235,7 @@ export default function App() {
             )}
           </div>
 
-          <div className="dock">
+          <div className={`dock ${menuOpen ? 'shifted' : ''}`}>
             <div className="readout">
               <span className="time">{fmt(position)}</span>
               <span className="seg">
@@ -245,7 +245,6 @@ export default function App() {
               </span>
             </div>
             <div className="dockrow">
-              <button className="db menu" onClick={() => setMenuOpen(true)} aria-label="メニュー">≡</button>
               <button className="db sub" onClick={back} disabled={history.length === 0}>◀ 戻る</button>
               <button className="db main play" onClick={togglePlay}>
                 {playing ? '❚❚ 一時停止' : '▶ 再生'}
@@ -258,6 +257,11 @@ export default function App() {
                   <button className="db sub" onClick={redo}>取り直す</button>
                 </>
               )}
+              <button
+                className={`db menu ${menuOpen ? 'on' : ''}`}
+                onClick={() => setMenuOpen((v) => !v)}
+                aria-label="メニュー"
+              >≡</button>
             </div>
           </div>
 

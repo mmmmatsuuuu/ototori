@@ -130,7 +130,8 @@ body {
 .readout .seg { font-size: 12px; color: var(--dim); text-align: right; }
 
 /* 主要操作は右寄せでコンパクトに。半透明+ぼかしでシステムUI風に */
-.dockrow { display: flex; gap: 8px; justify-content: flex-end; }
+/* 幅が足りないとき(縦向きなど)は折り返す */
+.dockrow { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
 .db {
   flex: 0 0 auto;
@@ -149,6 +150,8 @@ body {
 }
 .db.main { min-width: 116px; font-size: 15px; }
 .db.sub { min-width: 88px; font-size: 13px; font-weight: 600; color: var(--dim); }
+/* 設定(≡)は操作ボタンと区別できるよう正方形・少し離して置く */
+.db.menu { min-width: 54px; padding: 0; font-size: 20px; margin-right: 4px; color: var(--dim); }
 .db.play { background: rgba(93, 202, 165, 0.22); border-color: rgba(93, 202, 165, 0.5); color: var(--accent); }
 .db.go { background: rgba(240, 153, 123, 0.22); border-color: rgba(240, 153, 123, 0.5); color: var(--accent2); }
 .db:disabled { opacity: 0.3; cursor: default; }

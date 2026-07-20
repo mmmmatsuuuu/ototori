@@ -226,7 +226,6 @@ export default function App() {
           />
 
           <div className="topbar">
-            <button className="icon" onClick={() => setMenuOpen(true)} aria-label="メニュー">≡</button>
             <span className={`mode ${mode}`}>{mode === 'explore' ? '探索' : '練習'}</span>
             <span className="fname">{fileName}</span>
             {tempo !== 1 && (
@@ -246,6 +245,7 @@ export default function App() {
               </span>
             </div>
             <div className="dockrow">
+              <button className="db menu" onClick={() => setMenuOpen(true)} aria-label="メニュー">≡</button>
               <button className="db sub" onClick={back} disabled={history.length === 0}>◀ 戻る</button>
               <button className="db main play" onClick={togglePlay}>
                 {playing ? '❚❚ 一時停止' : '▶ 再生'}

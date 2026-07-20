@@ -178,6 +178,13 @@ export class AudioEngine {
 
   // ---- 再生 ----
 
+  // バックグラウンド復帰や割り込み(着信など)で AudioContext が
+  // suspended のまま戻ることがあるため、明示的に復帰させる。
+  async resume(): Promise<void> {
+    if (!this.ctx || this.ctx.state !== 'suspended') return
+    try { await this.ctx.resume() } catch { /* 解禁にはユーザー操作が要る場合がある */ }
+  }
+
   async play(from?: number): Promise<void> {
     if (!this.buffer) return
     const ctx = this.ensureCtx()

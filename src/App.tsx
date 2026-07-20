@@ -311,12 +311,12 @@ export default function App() {
                   setMenuOpen(false) // 波形を見て微調整に移れるよう閉じる
                 }}
                 disabled={endPoint == null}
-              >区間にフィット（開始〜終了を画面いっぱいに）</button>
+              >区間フィット</button>
               <button
                 className="drow"
                 onClick={() => { waveRef.current?.resetView(); setMenuOpen(false) }}
                 disabled={!isZoomed}
-              >全体表示（ズームをリセット）</button>
+              >全体表示</button>
               <label className="drow">
                 別のファイルを読み込む
                 <input type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg" onChange={onFileInput} hidden />

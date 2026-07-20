@@ -12,8 +12,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['apple-touch-icon.png'],
       manifest: {
-        name: '音取り — 耳コピ練習',
-        short_name: '音取り',
+        name: 'ototori',
+        short_name: 'ototori',
         description: 'ジャズソロの耳コピを補助する練習アプリ。テンポを落として区間をループ再生する。',
         lang: 'ja',
         start_url: '/',

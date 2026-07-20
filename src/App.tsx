@@ -236,7 +236,7 @@ export default function App() {
     <div className="app" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       {!buffer ? (
         <div className="empty">
-          <h1 className="brand">音取り<span>耳コピ練習</span></h1>
+          <h1 className="brand">ototori<span>耳コピ練習</span></h1>
           <label className="dropzone">
             <input type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg" onChange={onFileInput} hidden />
             <div className="dz-inner">

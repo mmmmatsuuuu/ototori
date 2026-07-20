@@ -44,6 +44,23 @@ docker compose down      # 停止
 初回は `npm install` が走るため少し時間がかかる。以降はソースをホストで編集すると HMR で即反映される。
 スマホの実機で確認する場合は `http://<PC の LAN IP>:5173` を開く。
 
+```sh
+docker compose exec dev npm run typecheck   # 型チェックのみ
+docker compose exec dev npm run build       # 型チェック + 本番ビルド(dist/)
+```
+
+## デプロイ（Netlify）
+
+`netlify.toml` に設定済み（ビルド `npm run build` / 公開 `dist`）。GitHub 連携で main への push を自動デプロイする。
+
+1. Netlify で「Add new site → Import an existing project」から本リポジトリを選択
+2. ビルド設定は `netlify.toml` が読まれるのでそのまま作成
+3. 以降 main にマージされると自動でデプロイされる
+
+Service Worker と manifest は `no-cache`、ハッシュ付きアセットは長期キャッシュするようヘッダを設定してある。
+
+> PWA としてのインストールやオフライン動作の確認は HTTPS が必要なため、デプロイ後の URL で行う。
+
 ## 進捗（マイルストーン）
 
 - [x] M1: ファイル読込 → 波形表示 → 再生/一時停止/停止 → 区間ループ → テンポ（暫定）
@@ -51,7 +68,8 @@ docker compose down      # 停止
 - [x] M3: アンカー送り（ライブ・パンチ方式）
 - [x] 波形のピンチズーム / パン / 再生ヘッド追従
 - [x] UI 刷新（波形フルスクリーン + フローティング UI、横置き前提）
-- [ ] M4: PWA 化 / Wake Lock / iOS 音声解禁 / Netlify デプロイ
+- [x] M4: PWA 化（オフライン動作 / ホーム画面に追加）/ Wake Lock（再生中は画面を消灯させない）
+- [ ] Netlify へのデプロイ（サイト作成は手動、以降は自動）
 
 未着手（バックログ）
 

@@ -62,6 +62,47 @@ export default function App() {
     return () => clearInterval(id)
   }, [engine])
 
+  // 再生中は画面を消灯させない(Wake Lock)。非対応環境では何もしない。
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null)
+  useEffect(() => {
+    const releaseLock = () => {
+      wakeLockRef.current?.release().catch(() => { /* 既に解放済み */ })
+      wakeLockRef.current = null
+    }
+    if (!('wakeLock' in navigator) || state !== 'playing') {
+      releaseLock()
+      return
+    }
+    let cancelled = false
+    const acquire = async () => {
+      if (wakeLockRef.current || document.visibilityState !== 'visible') return
+      try {
+        const s = await navigator.wakeLock.request('screen')
+        if (cancelled) { void s.release(); return }
+        wakeLockRef.current = s
+        s.addEventListener('release', () => { wakeLockRef.current = null })
+      } catch { /* 権限や電源状態により失敗することがある */ }
+    }
+    void acquire()
+    // 画面を離れると自動解放されるため、戻ってきたら取り直す
+    const onVisible = () => { if (document.visibilityState === 'visible') void acquire() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [state])
+  useEffect(() => () => { wakeLockRef.current?.release().catch(() => {}) }, [])
+
+  // 復帰時に AudioContext が止まったままにならないようにする
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void engine.resume()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [engine])
+
   // 縦向き検出(タッチ端末のみ。PCの縦長ウィンドウでは promptしない)
   useEffect(() => {
     const mq = window.matchMedia('(orientation: portrait)')

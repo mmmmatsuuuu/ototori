@@ -1,7 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import type { AudioEngine } from '../audio/AudioEngine'
 
 export type WaveMode = 'explore' | 'practice'
+
+// 「全体表示」「区間にフィット」はメニュー側にあるため、外部から呼べるように公開する
+export type WaveformHandle = {
+  resetView: () => void
+  fitTo: (start: number, end: number) => void
+}
 
 type Props = {
   engine: AudioEngine
@@ -12,6 +18,7 @@ type Props = {
   onSeek: (sec: number) => void
   onMoveAnchor: (sec: number) => void
   onMoveEnd: (sec: number) => void
+  onZoomedChange?: (zoomed: boolean) => void
 }
 
 type Peaks = { min: Float32Array; max: Float32Array; width: number; vs: number; ve: number; buffer: AudioBuffer }
@@ -40,40 +47,79 @@ function computePeaks(buffer: AudioBuffer, width: number, startSample: number, e
   return { min, max, width, vs: startSample, ve: endSample, buffer }
 }
 
-const HANDLE_HIT_PX = 14
+const HANDLE_HIT_PX = 22 // 起点/終点バーの当たり判定(指で掴める幅)
 const MIN_SPAN = 0.03 // 最大ズーム時の表示秒数
 
-export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd }: Props) {
+export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
+  { engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd, onZoomedChange },
+  ref,
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaksRef = useRef<Peaks | null>(null)
-  const [zoomed, setZoomed] = useState(false)
+  // 録音レベルが低い音源でも縦を活かせるよう、全体ピークで正規化する
+  const gainRef = useRef(1)
 
   // 最新の props をアニメーション/ポインタ処理から参照する ref
   const stateRef = useRef({ buffer, mode, anchor, endPoint })
   stateRef.current = { buffer, mode, anchor, endPoint }
+  const onZoomedChangeRef = useRef(onZoomedChange)
+  onZoomedChangeRef.current = onZoomedChange
 
   // 表示ウィンドウ(秒)。描画・ポインタ判定はすべてこれ基準。
   const viewRef = useRef({ start: 0, end: 0 })
+  const zoomedRef = useRef(false)
   const pointersRef = useRef(new Map<number, number>()) // pointerId -> clientX
   const pinchRef = useRef<{ dist0: number; span0: number; timeAtMid: number } | null>(null)
   const suppressFollowUntilRef = useRef(0)
 
-  const syncZoomed = (span: number, dur: number) => setZoomed(span < dur - 1e-4)
+  // ズーム状態が変わったときだけ通知(ピンチ中の再レンダーを避ける)
+  const syncZoomed = (span: number, dur: number) => {
+    const z = span < dur - 1e-4
+    if (z !== zoomedRef.current) {
+      zoomedRef.current = z
+      onZoomedChangeRef.current?.(z)
+    }
+  }
 
-  // バッファが変わったら全体表示にリセット
+  const resetView = () => {
+    const dur = stateRef.current.buffer?.duration ?? 0
+    viewRef.current = { start: 0, end: dur }
+    syncZoomed(dur, dur)
+  }
+
+  // 指定区間が画面いっぱいになるよう表示を合わせる(端が見切れないよう少し余白)
+  const fitTo = (start: number, end: number) => {
+    const dur = stateRef.current.buffer?.duration ?? 0
+    if (!dur || end <= start) return
+    const pad = (end - start) * 0.06
+    const span = Math.min(dur, Math.max(MIN_SPAN, end - start + pad * 2))
+    const vs = Math.max(0, Math.min(start - pad, dur - span))
+    viewRef.current = { start: vs, end: vs + span }
+    syncZoomed(span, dur)
+    suppressFollowUntilRef.current = performance.now() + 1200
+  }
+
+  useImperativeHandle(ref, () => ({ resetView, fitTo }), [])
+
+  // バッファが変わったら全体表示にリセットし、表示ゲインを求め直す
   useEffect(() => {
     const dur = buffer?.duration ?? 0
     viewRef.current = { start: 0, end: dur }
     pointersRef.current.clear()
     pinchRef.current = null
-    setZoomed(false)
-  }, [buffer])
+    syncZoomed(dur, dur)
 
-  const resetView = () => {
-    const dur = buffer?.duration ?? 0
-    viewRef.current = { start: 0, end: dur }
-    setZoomed(false)
-  }
+    if (!buffer) { gainRef.current = 1; return }
+    const data = buffer.getChannelData(0)
+    const stride = Math.max(1, Math.floor(data.length / 200000)) // 長尺は間引いて概算
+    let peak = 0
+    for (let i = 0; i < data.length; i += stride) {
+      const v = Math.abs(data[i])
+      if (v > peak) peak = v
+    }
+    // 音源のレベルによらず縦幅の約8割に収める(上下に余白を残す)
+    gainRef.current = peak > 0.001 ? Math.min(12, Math.max(0.3, 0.8 / peak)) : 1
+  }, [buffer])
 
   // 開発時のみ表示ウィンドウをデバッグ用に露出
   useEffect(() => {
@@ -103,7 +149,6 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
 
       const style = getComputedStyle(canvas)
       const cWave = style.getPropertyValue('--wave').trim() || '#5dcaa5'
-      const cLoop = style.getPropertyValue('--loop').trim() || 'rgba(93,202,165,0.16)'
       const cHead = style.getPropertyValue('--head').trim() || '#f0997b'
       const cAxis = style.getPropertyValue('--axis').trim() || 'rgba(255,255,255,0.15)'
 
@@ -139,12 +184,6 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       }
       const peaks = peaksRef.current!
 
-      // 区間の塗り(終点が確定しているとき)
-      if (endPoint != null) {
-        ctx.fillStyle = cLoop
-        ctx.fillRect(xOf(anchor), 0, xOf(endPoint) - xOf(anchor), h)
-      }
-
       // 中心線
       ctx.strokeStyle = cAxis
       ctx.lineWidth = 1
@@ -153,16 +192,27 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       ctx.lineTo(w, h / 2)
       ctx.stroke()
 
-      // 波形(列は表示範囲に対応)
+      // 波形(列は表示範囲に対応)。ゲインを掛けて縦幅を活かす
       ctx.fillStyle = cWave
       const mid = h / 2
+      const gain = gainRef.current
       for (let x = 0; x < peaks.width; x++) {
-        const y1 = mid + peaks.min[x] * mid
-        const y2 = mid + peaks.max[x] * mid
+        const y1 = mid + Math.max(-1, peaks.min[x] * gain) * mid
+        const y2 = mid + Math.min(1, peaks.max[x] * gain) * mid
         ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1))
       }
 
-      // 起点/終点マーカー
+      // 区間外を暗く落として、練習中の区間を浮き上がらせる
+      if (endPoint != null) {
+        ctx.fillStyle = 'rgba(15, 17, 21, 0.68)'
+        const xa = xOf(anchor)
+        const xb = xOf(endPoint)
+        if (xa > 0) ctx.fillRect(0, 0, xa, h)
+        if (xb < w) ctx.fillRect(xb, 0, w - xb, h)
+      }
+
+      // 起点/終点マーカー。つまみは上部バーに隠れない高さに置く
+      const knobY = Math.max(74 * dpr, h * 0.22)
       const marker = (sec: number) => {
         const x = xOf(sec)
         if (x < -2 || x > w + 2) return
@@ -174,7 +224,7 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
         ctx.stroke()
         ctx.fillStyle = cWave
         ctx.beginPath()
-        ctx.arc(x, 10 * dpr, 5 * dpr, 0, Math.PI * 2)
+        ctx.arc(x, knobY, 7 * dpr, 0, Math.PI * 2)
         ctx.fill()
       }
       marker(anchor)
@@ -198,14 +248,16 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
   }, [engine])
 
   // ポインタ操作:
-  //  1本指 → 従来操作(タップ=シーク/起点移動、ハンドル=微調整)
-  //  2本指 → ピンチでズーム + ドラッグでパン
-  //  ホイール → Ctrl でズーム、Shift/横スクロールでパン(PC)
+  //  1本指 … 起点/終点バー付近 → そのバーを移動
+  //          それ以外 → ドラッグでスクロール(パン)、動かさずに離せばタップ操作
+  //  2本指 … ピンチでズーム + 中点移動でパン
+  //  ホイール … Ctrl でズーム、Shift/横スクロールでパン(PC)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     let g: 'none' | 'anchor' | 'end' | 'body' | 'pinch' | 'suppress' = 'none'
     let downX = 0
+    let lastX = 0
     let moved = false
 
     const rectOf = () => canvas.getBoundingClientRect()
@@ -273,6 +325,7 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       }
       if (pointersRef.current.size !== 1) return
       downX = e.clientX
+      lastX = e.clientX
       moved = false
       const { anchor, endPoint } = stateRef.current
       if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) g = 'anchor'
@@ -289,8 +342,14 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
       if (g === 'anchor') onMoveAnchor(clampAnchor(sec))
       else if (g === 'end') onMoveEnd(clampEnd(sec))
       else if (g === 'body' && moved) {
-        if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
-        else onSeek(sec)
+        // 1本指ドラッグ = スクロール(パン)。指に波形が付いてくる向き
+        const { start, end } = viewRef.current
+        const span = end - start
+        const rect = rectOf()
+        const dx = e.clientX - lastX
+        lastX = e.clientX
+        setView(start - (dx / rect.width) * span, span)
+        suppressFollowUntilRef.current = performance.now() + 1500
       }
     }
     const endPointer = (e: PointerEvent, tap: boolean) => {
@@ -350,12 +409,5 @@ export function Waveform({ engine, buffer, mode, anchor, endPoint, onSeek, onMov
     }
   }, [onSeek, onMoveAnchor, onMoveEnd])
 
-  return (
-    <div className="wavewrap">
-      <canvas ref={canvasRef} className="waveform" aria-label="波形" />
-      {zoomed && (
-        <button className="wavereset" onClick={resetView} type="button">全体</button>
-      )}
-    </div>
-  )
-}
+  return <canvas ref={canvasRef} className="waveform" aria-label="波形" />
+})

@@ -66,11 +66,12 @@ body {
   display: grid; place-items: center;
   font-size: 20px; line-height: 1;
   border-radius: 12px;
-  border: 1px solid var(--line);
-  background: rgba(30, 34, 43, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(38, 43, 54, 0.55);
   color: var(--text);
   cursor: pointer;
-  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
 }
 .icon:hover { border-color: var(--accent); }
 
@@ -128,26 +129,32 @@ body {
 .readout .time { font-size: 24px; font-weight: 700; }
 .readout .seg { font-size: 12px; color: var(--dim); text-align: right; }
 
-.dockrow { display: flex; gap: 8px; }
+/* 主要操作は右寄せでコンパクトに。半透明+ぼかしでシステムUI風に */
+.dockrow { display: flex; gap: 8px; justify-content: flex-end; }
 
 .db {
-  min-height: 56px;
-  padding: 0 14px;
+  flex: 0 0 auto;
+  min-height: 54px;
+  padding: 0 16px;
   border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(30, 34, 43, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(38, 43, 54, 0.55);
   color: var(--text);
-  font-size: 15px; font-weight: 700;
+  font-size: 14px; font-weight: 700;
   cursor: pointer;
-  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
   white-space: nowrap;
+  transition: background .15s, border-color .15s;
 }
-.db.main { flex: 1 1 0; font-size: 17px; }
-.db.sub { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--dim); }
-.db.play { background: var(--accent); color: #0f1115; border-color: transparent; }
-.db.go { background: var(--accent2); color: #0f1115; border-color: transparent; }
-.db:disabled { opacity: 0.35; cursor: default; }
-.db:not(:disabled):hover { filter: brightness(1.08); }
+.db.main { min-width: 116px; font-size: 15px; }
+.db.sub { min-width: 88px; font-size: 13px; font-weight: 600; color: var(--dim); }
+.db.play { background: rgba(93, 202, 165, 0.22); border-color: rgba(93, 202, 165, 0.5); color: var(--accent); }
+.db.go { background: rgba(240, 153, 123, 0.22); border-color: rgba(240, 153, 123, 0.5); color: var(--accent2); }
+.db:disabled { opacity: 0.3; cursor: default; }
+.db:not(:disabled):active { background: rgba(255, 255, 255, 0.16); }
+.db.play:not(:disabled):active { background: rgba(93, 202, 165, 0.36); }
+.db.go:not(:disabled):active { background: rgba(240, 153, 123, 0.36); }
 
 /* ---- サイドドロワー ---- */
 .scrim {

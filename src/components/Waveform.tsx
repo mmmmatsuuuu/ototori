@@ -44,7 +44,7 @@ function computePeaks(buffer: AudioBuffer, width: number, startSample: number, e
   return { min, max, width, vs: startSample, ve: endSample, buffer }
 }
 
-const HANDLE_HIT_PX = 14
+const HANDLE_HIT_PX = 22 // 起点/終点バーの当たり判定(指で掴める幅)
 const MIN_SPAN = 0.03 // 最大ズーム時の表示秒数
 
 export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
@@ -232,14 +232,16 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
   }, [engine])
 
   // ポインタ操作:
-  //  1本指 → 従来操作(タップ=シーク/起点移動、ハンドル=微調整)
-  //  2本指 → ピンチでズーム + ドラッグでパン
-  //  ホイール → Ctrl でズーム、Shift/横スクロールでパン(PC)
+  //  1本指 … 起点/終点バー付近 → そのバーを移動
+  //          それ以外 → ドラッグでスクロール(パン)、動かさずに離せばタップ操作
+  //  2本指 … ピンチでズーム + 中点移動でパン
+  //  ホイール … Ctrl でズーム、Shift/横スクロールでパン(PC)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     let g: 'none' | 'anchor' | 'end' | 'body' | 'pinch' | 'suppress' = 'none'
     let downX = 0
+    let lastX = 0
     let moved = false
 
     const rectOf = () => canvas.getBoundingClientRect()
@@ -307,6 +309,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       }
       if (pointersRef.current.size !== 1) return
       downX = e.clientX
+      lastX = e.clientX
       moved = false
       const { anchor, endPoint } = stateRef.current
       if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) g = 'anchor'
@@ -323,8 +326,14 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       if (g === 'anchor') onMoveAnchor(clampAnchor(sec))
       else if (g === 'end') onMoveEnd(clampEnd(sec))
       else if (g === 'body' && moved) {
-        if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
-        else onSeek(sec)
+        // 1本指ドラッグ = スクロール(パン)。指に波形が付いてくる向き
+        const { start, end } = viewRef.current
+        const span = end - start
+        const rect = rectOf()
+        const dx = e.clientX - lastX
+        lastX = e.clientX
+        setView(start - (dx / rect.width) * span, span)
+        suppressFollowUntilRef.current = performance.now() + 1500
       }
     }
     const endPointer = (e: PointerEvent, tap: boolean) => {

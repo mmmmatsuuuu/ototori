@@ -3,8 +3,11 @@ import type { AudioEngine } from '../audio/AudioEngine'
 
 export type WaveMode = 'explore' | 'practice'
 
-// 「全体表示」はメニュー側にあるため、外部から呼べるように公開する
-export type WaveformHandle = { resetView: () => void }
+// 「全体表示」「区間にフィット」はメニュー側にあるため、外部から呼べるように公開する
+export type WaveformHandle = {
+  resetView: () => void
+  fitTo: (start: number, end: number) => void
+}
 
 type Props = {
   engine: AudioEngine
@@ -83,7 +86,20 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
     viewRef.current = { start: 0, end: dur }
     syncZoomed(dur, dur)
   }
-  useImperativeHandle(ref, () => ({ resetView }), [])
+
+  // 指定区間が画面いっぱいになるよう表示を合わせる(端が見切れないよう少し余白)
+  const fitTo = (start: number, end: number) => {
+    const dur = stateRef.current.buffer?.duration ?? 0
+    if (!dur || end <= start) return
+    const pad = (end - start) * 0.06
+    const span = Math.min(dur, Math.max(MIN_SPAN, end - start + pad * 2))
+    const vs = Math.max(0, Math.min(start - pad, dur - span))
+    viewRef.current = { start: vs, end: vs + span }
+    syncZoomed(span, dur)
+    suppressFollowUntilRef.current = performance.now() + 1200
+  }
+
+  useImperativeHandle(ref, () => ({ resetView, fitTo }), [])
 
   // バッファが変わったら全体表示にリセットし、表示ゲインを求め直す
   useEffect(() => {

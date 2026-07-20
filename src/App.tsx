@@ -305,6 +305,15 @@ export default function App() {
             <section className="dsec">
               <button
                 className="drow"
+                onClick={() => {
+                  if (endPoint == null) return
+                  waveRef.current?.fitTo(anchor, endPoint)
+                  setMenuOpen(false) // 波形を見て微調整に移れるよう閉じる
+                }}
+                disabled={endPoint == null}
+              >区間にフィット（開始〜終了を画面いっぱいに）</button>
+              <button
+                className="drow"
                 onClick={() => { waveRef.current?.resetView(); setMenuOpen(false) }}
                 disabled={!isZoomed}
               >全体表示（ズームをリセット）</button>

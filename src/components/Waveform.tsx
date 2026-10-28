@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import type { AudioEngine } from '../audio/AudioEngine'
+import { fmt } from '../format'
 
 export type WaveMode = 'explore' | 'practice'
 
@@ -18,6 +19,9 @@ type Props = {
   onSeek: (sec: number) => void
   onMoveAnchor: (sec: number) => void
   onMoveEnd: (sec: number) => void
+  // 再生ヘッドのドラッグ開始/終了(再生中なら一時停止→再開するため)
+  onScrubStart: () => void
+  onScrubEnd: () => void
   onZoomedChange?: (zoomed: boolean) => void
 }
 
@@ -47,11 +51,17 @@ function computePeaks(buffer: AudioBuffer, width: number, startSample: number, e
   return { min, max, width, vs: startSample, ve: endSample, buffer }
 }
 
-const HANDLE_HIT_PX = 22 // 起点/終点バーの当たり判定(指で掴める幅)
+const HANDLE_HIT_PX = 22 // 起点/終点バー・再生ヘッドの当たり判定(指で掴める幅)
 const MIN_SPAN = 0.03 // 最大ズーム時の表示秒数
+const FADED_ALPHA = 0.6 // 掴めない側の半分(点線)の濃さ
+const DIM_OTHER_ZONE = 'rgba(15, 17, 21, 0.6)' // 触っている間、反対側の半分を落とす色
+
+// 波形の上半分=区間(起点/終点)、下半分=再生位置 を操作するゾーン
+type Zone = 'top' | 'bottom'
+type Grab = 'anchor' | 'end' | 'head'
 
 export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
-  { engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd, onZoomedChange },
+  { engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd, onScrubStart, onScrubEnd, onZoomedChange },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -71,6 +81,9 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
   const pointersRef = useRef(new Map<number, number>()) // pointerId -> clientX
   const pinchRef = useRef<{ dist0: number; span0: number; timeAtMid: number } | null>(null)
   const suppressFollowUntilRef = useRef(0)
+  // 触っているゾーンと掴んでいるもの。描画(ラベル表示・反対側を暗く)に使う
+  const activeZoneRef = useRef<Zone | null>(null)
+  const grabRef = useRef<Grab | null>(null)
 
   // ズーム状態が変わったときだけ通知(ピンチ中の再レンダーを避ける)
   const syncZoomed = (span: number, dur: number) => {
@@ -211,34 +224,86 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
         if (xb < w) ctx.fillRect(xb, 0, w - xb, h)
       }
 
-      // 起点/終点マーカー。つまみは上部バーに隠れない高さに置く
+      const zone = activeZoneRef.current
+      const grab = grabRef.current
+      const visible = (x: number) => x >= -2 && x <= w + 2
+
+      // 縦線は掴めるゾーン側を実線、反対側を細い点線で描く
+      const vline = (x: number, color: string, solid: Zone) => {
+        ctx.strokeStyle = color
+        for (const z of ['top', 'bottom'] as const) {
+          const isSolid = z === solid
+          ctx.lineWidth = (isSolid ? 2 : 1) * dpr
+          ctx.setLineDash(isSolid ? [] : [3 * dpr, 4 * dpr])
+          ctx.globalAlpha = isSolid ? 1 : FADED_ALPHA
+          ctx.beginPath()
+          ctx.moveTo(x, z === 'top' ? 0 : mid)
+          ctx.lineTo(x, z === 'top' ? mid : h)
+          ctx.stroke()
+        }
+        ctx.setLineDash([])
+        ctx.globalAlpha = 1
+      }
+
+      // 起点/終点(上半分)と再生ヘッド(下半分)
+      // つまみは上部バー・下部ドックに隠れない高さに置く
       const knobY = Math.max(74 * dpr, h * 0.22)
-      const marker = (sec: number) => {
-        const x = xOf(sec)
-        if (x < -2 || x > w + 2) return
-        ctx.strokeStyle = cWave
-        ctx.lineWidth = 2 * dpr
-        ctx.beginPath()
-        ctx.moveTo(x, 0)
-        ctx.lineTo(x, h)
-        ctx.stroke()
+      const headKnobY = Math.min(h - 104 * dpr, h * 0.78)
+      const bars: { x: number; label: string; grab: Grab }[] = [{ x: xOf(anchor), label: '起点', grab: 'anchor' }]
+      if (endPoint != null) bars.push({ x: xOf(endPoint), label: '終点', grab: 'end' })
+      const hx = xOf(pos)
+
+      for (const b of bars) if (visible(b.x)) vline(b.x, cWave, 'top')
+      if (visible(hx)) vline(hx, cHead, 'bottom')
+
+      // 触っていないゾーンのつまみは小さく(区間=丸, 再生位置=ひし形)
+      if (zone !== 'top') {
         ctx.fillStyle = cWave
+        for (const b of bars) {
+          if (!visible(b.x)) continue
+          ctx.beginPath()
+          ctx.arc(b.x, knobY, 7 * dpr, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+      if (zone !== 'bottom' && visible(hx)) {
+        const r = 8 * dpr
+        ctx.fillStyle = cHead
         ctx.beginPath()
-        ctx.arc(x, knobY, 7 * dpr, 0, Math.PI * 2)
+        ctx.moveTo(hx, headKnobY - r)
+        ctx.lineTo(hx + r, headKnobY)
+        ctx.lineTo(hx, headKnobY + r)
+        ctx.lineTo(hx - r, headKnobY)
+        ctx.closePath()
         ctx.fill()
       }
-      marker(anchor)
-      if (endPoint != null) marker(endPoint)
 
-      // 再生ヘッド
-      const hx = xOf(pos)
-      if (hx >= -2 && hx <= w + 2) {
-        ctx.strokeStyle = cHead
-        ctx.lineWidth = 2 * dpr
+      // 触っている間は反対側の半分を暗く落とす
+      if (zone) {
+        ctx.fillStyle = DIM_OTHER_ZONE
+        ctx.fillRect(0, zone === 'top' ? mid : 0, w, h - mid)
+      }
+
+      // 触っているゾーンのつまみは、何を動かすか読めるようラベル付きタブにする(掴んだものは大きく)
+      const tab = (x: number, y: number, text: string, color: string, active: boolean) => {
+        const fs = (active ? 15 : 12) * dpr
+        ctx.font = `600 ${fs}px system-ui, -apple-system, "Hiragino Sans", sans-serif`
+        const bw = ctx.measureText(text).width + 16 * dpr
+        const bh = fs + 12 * dpr
+        const bx = Math.max(2 * dpr, Math.min(x - bw / 2, w - bw - 2 * dpr)) // 画面端で切れないよう寄せる
+        ctx.fillStyle = color
         ctx.beginPath()
-        ctx.moveTo(hx, 0)
-        ctx.lineTo(hx, h)
-        ctx.stroke()
+        ctx.roundRect(bx, y - bh / 2, bw, bh, bh / 2)
+        ctx.fill()
+        ctx.fillStyle = '#0f1115'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(text, bx + bw / 2, y)
+      }
+      if (zone === 'top') {
+        for (const b of bars) if (visible(b.x)) tab(b.x, knobY, b.label, cWave, grab === b.grab)
+      } else if (zone === 'bottom' && visible(hx)) {
+        tab(hx, headKnobY, fmt(pos), cHead, grab === 'head')
       }
 
       raf = requestAnimationFrame(draw)
@@ -248,14 +313,16 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
   }, [engine])
 
   // ポインタ操作:
-  //  1本指 … 起点/終点バー付近 → そのバーを移動
+  //  1本指 … 上半分: 起点/終点バー付近 → そのバーを移動
+  //          下半分: 再生ヘッド付近 → 再生位置を移動
   //          それ以外 → ドラッグでスクロール(パン)、動かさずに離せばタップ操作
   //  2本指 … ピンチでズーム + 中点移動でパン
   //  ホイール … Ctrl でズーム、Shift/横スクロールでパン(PC)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    let g: 'none' | 'anchor' | 'end' | 'body' | 'pinch' | 'suppress' = 'none'
+    let g: 'none' | 'anchor' | 'end' | 'head' | 'body' | 'pinch' | 'suppress' = 'none'
+    let zone: Zone = 'top'
     let downX = 0
     let lastX = 0
     let moved = false
@@ -281,6 +348,26 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
     const clampEnd = (sec: number) => {
       const { anchor, buffer } = stateRef.current
       return Math.min(buffer?.duration ?? 0, Math.max(sec, anchor + 0.02))
+    }
+    // 再生位置は起点より後ろ(練習中は区間内)に限る。起点より前だと「区切る」が効かないため
+    const clampHead = (sec: number) => {
+      const { anchor, endPoint, buffer } = stateRef.current
+      const hi = endPoint != null ? endPoint - 0.001 : (buffer?.duration ?? 0)
+      return Math.max(anchor, Math.min(sec, hi))
+    }
+    const zoneAt = (clientY: number): Zone => {
+      const rect = rectOf()
+      return clientY - rect.top < rect.height / 2 ? 'top' : 'bottom'
+    }
+    // そのゾーンで掴めるもの(なければ null)
+    const grabAt = (clientX: number, z: Zone): Grab | null => {
+      const { anchor, endPoint } = stateRef.current
+      if (z === 'bottom') {
+        return Math.abs(clientX - pxOf(engine.getPosition())) <= HANDLE_HIT_PX ? 'head' : null
+      }
+      if (Math.abs(clientX - pxOf(anchor)) <= HANDLE_HIT_PX) return 'anchor'
+      if (endPoint != null && Math.abs(clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) return 'end'
+      return null
     }
     const setView = (start: number, span: number) => {
       const dur = stateRef.current.buffer?.duration ?? 0
@@ -318,22 +405,33 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       pointersRef.current.set(e.pointerId, e.clientX)
       canvas.setPointerCapture(e.pointerId)
       if (pointersRef.current.size === 2) {
+        if (g === 'head') onScrubEnd()
         const xs = [...pointersRef.current.values()]
         startPinch(xs[0], xs[1])
         g = 'pinch'
+        activeZoneRef.current = null
+        grabRef.current = null
         return
       }
       if (pointersRef.current.size !== 1) return
       downX = e.clientX
       lastX = e.clientX
       moved = false
-      const { anchor, endPoint } = stateRef.current
-      if (Math.abs(e.clientX - pxOf(anchor)) <= HANDLE_HIT_PX) g = 'anchor'
-      else if (endPoint != null && Math.abs(e.clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) g = 'end'
-      else g = 'body'
+      zone = zoneAt(e.clientY)
+      activeZoneRef.current = zone
+      const grab = grabAt(e.clientX, zone)
+      grabRef.current = grab
+      g = grab ?? 'body'
+      if (g === 'head') onScrubStart()
     }
     const onMove = (e: PointerEvent) => {
-      if (!pointersRef.current.has(e.pointerId)) return
+      if (!pointersRef.current.has(e.pointerId)) {
+        // PC のホバー: 掴める位置だけカーソルを変える
+        if (e.pointerType === 'mouse' && stateRef.current.buffer) {
+          canvas.style.cursor = grabAt(e.clientX, zoneAt(e.clientY)) ? 'ew-resize' : ''
+        }
+        return
+      }
       pointersRef.current.set(e.pointerId, e.clientX)
       if (g === 'pinch') { updatePinch(); return }
       if (g === 'none' || g === 'suppress') return
@@ -341,6 +439,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       const sec = secAt(e.clientX)
       if (g === 'anchor') onMoveAnchor(clampAnchor(sec))
       else if (g === 'end') onMoveEnd(clampEnd(sec))
+      else if (g === 'head') onSeek(clampHead(sec))
       else if (g === 'body' && moved) {
         // 1本指ドラッグ = スクロール(パン)。指に波形が付いてくる向き
         const { start, end } = viewRef.current
@@ -356,6 +455,10 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       pointersRef.current.delete(e.pointerId)
       try { canvas.releasePointerCapture(e.pointerId) } catch { /* noop */ }
       const remaining = pointersRef.current.size
+      if (remaining === 0) {
+        activeZoneRef.current = null
+        grabRef.current = null
+      }
       if (g === 'pinch') {
         if (remaining < 2) pinchRef.current = null
         g = remaining > 0 ? 'suppress' : 'none'
@@ -363,9 +466,12 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
         return
       }
       if (g === 'suppress') { if (remaining === 0) g = 'none'; return }
+      if (g === 'head') onScrubEnd()
       if (tap && g === 'body' && !moved) {
         const sec = secAt(e.clientX)
-        if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
+        // 下半分=再生位置へシーク / 上半分=探索では起点移動、練習ではシーク
+        if (zone === 'bottom') onSeek(clampHead(sec))
+        else if (stateRef.current.mode === 'explore') onMoveAnchor(clampAnchor(sec))
         else onSeek(sec)
       }
       g = 'none'
@@ -407,7 +513,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       canvas.removeEventListener('pointercancel', onCancel)
       canvas.removeEventListener('wheel', onWheel)
     }
-  }, [onSeek, onMoveAnchor, onMoveEnd])
+  }, [engine, onSeek, onMoveAnchor, onMoveEnd, onScrubStart, onScrubEnd])
 
   return <canvas ref={canvasRef} className="waveform" aria-label="波形" />
 })

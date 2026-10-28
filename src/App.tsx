@@ -2,19 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AudioEngine, type EngineState, type PrepareState } from './audio/AudioEngine'
 import { Waveform, type WaveformHandle } from './components/Waveform'
 import { makeSampleWav } from './audio/sampleTone'
+import { fmt } from './format'
 
 const TEMPO_PRESETS = [0.35, 0.4, 0.5, 0.65, 0.8, 1.0]
 
 type Mode = 'explore' | 'practice'
 type Segment = { start: number; end: number }
-
-function fmt(sec: number): string {
-  if (!isFinite(sec) || sec < 0) sec = 0
-  const m = Math.floor(sec / 60)
-  const s = Math.floor(sec % 60)
-  const ms = Math.floor((sec % 1) * 100)
-  return `${m}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
-}
 
 export default function App() {
   const engineRef = useRef<AudioEngine>()
@@ -226,6 +219,16 @@ export default function App() {
     setEndPoint(sec)
     engine.setLoop(anchorRef.current, sec)
   }, [engine])
+  // 再生ヘッドのドラッグ中は止めて位置だけ動かし、離したら再開する(毎回シークすると音が途切れるため)
+  const resumeAfterScrubRef = useRef(false)
+  const onScrubStart = useCallback(() => {
+    resumeAfterScrubRef.current = engine.state === 'playing'
+    engine.pause()
+  }, [engine])
+  const onScrubEnd = useCallback(() => {
+    if (resumeAfterScrubRef.current) void engine.play()
+    resumeAfterScrubRef.current = false
+  }, [engine])
   const onZoomedChange = useCallback((z: boolean) => setIsZoomed(z), [])
 
   const playing = state === 'playing'
@@ -263,6 +266,8 @@ export default function App() {
             onSeek={onSeek}
             onMoveAnchor={onMoveAnchor}
             onMoveEnd={onMoveEnd}
+            onScrubStart={onScrubStart}
+            onScrubEnd={onScrubEnd}
             onZoomedChange={onZoomedChange}
           />
 

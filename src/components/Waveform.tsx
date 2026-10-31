@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, type RefObject } from 'react'
 import type { AudioEngine } from '../audio/AudioEngine'
 import { fmt } from '../format'
 
@@ -23,6 +23,7 @@ type Props = {
   onScrubStart: () => void
   onScrubEnd: () => void
   onZoomedChange?: (zoomed: boolean) => void
+  dockRef: RefObject<HTMLElement> // 再生ヘッドのつまみを下部ドックに重ねないために高さを読む
 }
 
 type Peaks = { min: Float32Array; max: Float32Array; width: number; vs: number; ve: number; buffer: AudioBuffer }
@@ -32,12 +33,12 @@ function computePeaks(buffer: AudioBuffer, width: number, startSample: number, e
   const data = buffer.getChannelData(0)
   const min = new Float32Array(width)
   const max = new Float32Array(width)
-  const s = Math.max(0, Math.min(startSample, data.length))
-  const e = Math.max(s, Math.min(endSample, data.length))
-  const step = (e - s) / width
+  // 表示範囲は曲の前後の余白にはみ出すことがある。はみ出した列は無音(0)になる
+  const step = (endSample - startSample) / width
   for (let x = 0; x < width; x++) {
-    const a = Math.floor(s + x * step)
-    const b = Math.min(data.length, Math.max(a + 1, Math.floor(s + (x + 1) * step)))
+    const a0 = Math.floor(startSample + x * step)
+    const a = Math.max(0, a0)
+    const b = Math.min(data.length, Math.max(a0 + 1, Math.floor(startSample + (x + 1) * step)))
     let lo = 1
     let hi = -1
     for (let i = a; i < b; i++) {
@@ -53,15 +54,24 @@ function computePeaks(buffer: AudioBuffer, width: number, startSample: number, e
 
 const HANDLE_HIT_PX = 22 // 起点/終点バー・再生ヘッドの当たり判定(指で掴める幅)
 const MIN_SPAN = 0.03 // 最大ズーム時の表示秒数
+const KNOB_MARGIN_PX = 16 // 曲の前後の余白に足す幅(つまみの半径。端でもつまみが切れないように)
+const MAX_MARGIN_RATIO = 0.25 // 片側の余白の上限(画面幅に対する割合)
 const FADED_ALPHA = 0.6 // 掴めない側の半分(点線)の濃さ
 const DIM_OTHER_ZONE = 'rgba(15, 17, 21, 0.6)' // 触っている間、反対側の半分を落とす色
+
+// 起点/終点のつまみの高さ(CSS px)。重なっても掴み分けられるよう段違いに置く。
+// 起点は上部バーに隠れない高さ、終点はその下(タブ同士も重ならない間隔)
+const barKnobYs = (cssH: number) => {
+  const anchor = Math.max(74, cssH * 0.22)
+  return { anchor, end: Math.max(anchor, Math.min(anchor + 40, cssH / 2 - 18)) }
+}
 
 // 波形の上半分=区間(起点/終点)、下半分=再生位置 を操作するゾーン
 type Zone = 'top' | 'bottom'
 type Grab = 'anchor' | 'end' | 'head'
 
 export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
-  { engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd, onScrubStart, onScrubEnd, onZoomedChange },
+  { engine, buffer, mode, anchor, endPoint, onSeek, onMoveAnchor, onMoveEnd, onScrubStart, onScrubEnd, onZoomedChange, dockRef },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -85,30 +95,45 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
   const activeZoneRef = useRef<Zone | null>(null)
   const grabRef = useRef<Grab | null>(null)
 
+  // 曲の前後の余白(画面幅に対する割合)。ノッチ等に隠れてつまみを掴めなくなるのを防ぐ。
+  // 表示範囲を曲の外へはみ出せるようにして作るので、余白が見えるのは曲の両端だけ。
+  const marginRef = useRef({ left: 0, right: 0 })
+
+  // 余白込みで曲全体が収まる表示秒数
+  const fullSpanOf = (dur: number) => dur / (1 - marginRef.current.left - marginRef.current.right)
+
   // ズーム状態が変わったときだけ通知(ピンチ中の再レンダーを避ける)
   const syncZoomed = (span: number, dur: number) => {
-    const z = span < dur - 1e-4
+    const z = span < fullSpanOf(dur) - 1e-4
     if (z !== zoomedRef.current) {
       zoomedRef.current = z
       onZoomedChangeRef.current?.(z)
     }
   }
 
-  const resetView = () => {
+  // 表示範囲を、余白を超えないように収めて設定する
+  const setView = (start: number, span: number) => {
     const dur = stateRef.current.buffer?.duration ?? 0
-    viewRef.current = { start: 0, end: dur }
-    syncZoomed(dur, dur)
+    const { left, right } = marginRef.current
+    const sp = Math.max(Math.min(MIN_SPAN, dur), Math.min(span, fullSpanOf(dur)))
+    const st = Math.max(-left * sp, Math.min(start, dur + right * sp - sp))
+    viewRef.current = { start: st, end: st + sp }
+    syncZoomed(sp, dur)
   }
 
-  // 指定区間が画面いっぱいになるよう表示を合わせる(端が見切れないよう少し余白)
+  const resetView = () => {
+    const dur = stateRef.current.buffer?.duration ?? 0
+    setView(-marginRef.current.left * fullSpanOf(dur), fullSpanOf(dur))
+  }
+
+  // 指定区間が画面いっぱいになるよう表示を合わせる(端が見切れず、ノッチにも隠れないよう余白を取る)
   const fitTo = (start: number, end: number) => {
     const dur = stateRef.current.buffer?.duration ?? 0
     if (!dur || end <= start) return
-    const pad = (end - start) * 0.06
-    const span = Math.min(dur, Math.max(MIN_SPAN, end - start + pad * 2))
-    const vs = Math.max(0, Math.min(start - pad, dur - span))
-    viewRef.current = { start: vs, end: vs + span }
-    syncZoomed(span, dur)
+    const padL = Math.max(0.06, marginRef.current.left)
+    const padR = Math.max(0.06, marginRef.current.right)
+    const span = Math.max(MIN_SPAN, (end - start) / (1 - padL - padR))
+    setView(start - padL * span, span)
     suppressFollowUntilRef.current = performance.now() + 1200
   }
 
@@ -116,11 +141,9 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
 
   // バッファが変わったら全体表示にリセットし、表示ゲインを求め直す
   useEffect(() => {
-    const dur = buffer?.duration ?? 0
-    viewRef.current = { start: 0, end: dur }
     pointersRef.current.clear()
     pinchRef.current = null
-    syncZoomed(dur, dur)
+    resetView()
 
     if (!buffer) { gainRef.current = 1; return }
     const data = buffer.getChannelData(0)
@@ -162,8 +185,9 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
 
       const style = getComputedStyle(canvas)
       const cWave = style.getPropertyValue('--wave').trim() || '#5dcaa5'
-      const cHead = style.getPropertyValue('--head').trim() || '#f0997b'
       const cAxis = style.getPropertyValue('--axis').trim() || 'rgba(255,255,255,0.15)'
+      const cBarKnob = style.getPropertyValue('--bar-knob').trim() || '#e8ecf1'
+      const cHeadKnob = style.getPropertyValue('--head-knob').trim() || '#c9704f'
 
       if (!buffer) {
         raf = requestAnimationFrame(draw)
@@ -172,19 +196,29 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       const dur = buffer.duration
       const pos = engine.getPosition()
 
-      // 再生ヘッド自動追従(再生中・ズーム中・無操作時のみ)
-      let { start: vs, end: ve } = viewRef.current
-      let span = ve - vs
-      if (
-        engine.state === 'playing' && span < dur - 1e-6 &&
-        pointersRef.current.size === 0 && performance.now() > suppressFollowUntilRef.current &&
-        (pos < vs || pos > ve)
-      ) {
-        vs = Math.max(0, Math.min(pos - 0.05 * span, dur - span))
-        ve = vs + span
-        viewRef.current = { start: vs, end: ve }
+      // 余白を測り直す(画面の回転でセーフエリアが変わる)。全体表示なら全体が収まるよう合わせ直す
+      const toRatio = (css: string) => cssW > 0
+        ? Math.min(MAX_MARGIN_RATIO, ((parseFloat(css) || 0) + KNOB_MARGIN_PX) / cssW)
+        : 0
+      const left = toRatio(style.scrollPaddingLeft)
+      const right = toRatio(style.scrollPaddingRight)
+      if (left !== marginRef.current.left || right !== marginRef.current.right) {
+        marginRef.current = { left, right }
+        if (zoomedRef.current) setView(viewRef.current.start, viewRef.current.end - viewRef.current.start)
+        else resetView()
       }
-      span = ve - vs || dur
+
+      // 再生ヘッド自動追従(再生中・ズーム中・無操作時のみ)
+      if (
+        engine.state === 'playing' && zoomedRef.current &&
+        pointersRef.current.size === 0 && performance.now() > suppressFollowUntilRef.current &&
+        (pos < viewRef.current.start || pos > viewRef.current.end)
+      ) {
+        const sp = viewRef.current.end - viewRef.current.start
+        setView(pos - 0.05 * sp, sp)
+      }
+      const { start: vs, end: ve } = viewRef.current
+      const span = ve - vs || dur
       const xOf = (sec: number) => ((sec - vs) / span) * w
 
       // 表示範囲のピーク(ビュー/幅が変わったら再計算)
@@ -209,7 +243,9 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       ctx.fillStyle = cWave
       const mid = h / 2
       const gain = gainRef.current
-      for (let x = 0; x < peaks.width; x++) {
+      const waveX0 = Math.max(0, Math.ceil(xOf(0))) // 曲の前後の余白には描かない
+      const waveX1 = Math.min(peaks.width, Math.floor(xOf(dur)))
+      for (let x = waveX0; x < waveX1; x++) {
         const y1 = mid + Math.max(-1, peaks.min[x] * gain) * mid
         const y2 = mid + Math.min(1, peaks.max[x] * gain) * mid
         ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1))
@@ -246,29 +282,41 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       }
 
       // 起点/終点(上半分)と再生ヘッド(下半分)
-      // つまみは上部バー・下部ドックに隠れない高さに置く
-      const knobY = Math.max(74 * dpr, h * 0.22)
-      const headKnobY = Math.min(h - 104 * dpr, h * 0.78)
-      const bars: { x: number; label: string; grab: Grab }[] = [{ x: xOf(anchor), label: '起点', grab: 'anchor' }]
-      if (endPoint != null) bars.push({ x: xOf(endPoint), label: '終点', grab: 'end' })
+      // つまみは上部バー・下部ドックに隠れない高さに置く(再生ヘッドは中心線とドックの中間)
+      const knobYs = barKnobYs(cssH)
+      const dockTop = h - (dockRef.current?.offsetHeight ?? 0) * dpr
+      const headKnobY = Math.max(mid + 20 * dpr, (mid + dockTop) / 2)
+      const bars: { x: number; y: number; label: string; grab: Grab }[] = [
+        { x: xOf(anchor), y: knobYs.anchor * dpr, label: '起点', grab: 'anchor' },
+      ]
+      if (endPoint != null) bars.push({ x: xOf(endPoint), y: knobYs.end * dpr, label: '終点', grab: 'end' })
       const hx = xOf(pos)
 
-      for (const b of bars) if (visible(b.x)) vline(b.x, cWave, 'top')
-      if (visible(hx)) vline(hx, cHead, 'bottom')
+      for (const b of bars) if (visible(b.x)) vline(b.x, cBarKnob, 'top')
+      if (visible(hx)) vline(hx, cHeadKnob, 'bottom')
 
-      // 触っていないゾーンのつまみは小さく(区間=丸, 再生位置=ひし形)
+      // 触っていないゾーンのつまみは小さく(区間=丸に矢印, 再生位置=ひし形)
       if (zone !== 'top') {
-        ctx.fillStyle = cWave
         for (const b of bars) {
           if (!visible(b.x)) continue
+          ctx.fillStyle = cBarKnob
           ctx.beginPath()
-          ctx.arc(b.x, knobY, 7 * dpr, 0, Math.PI * 2)
+          ctx.arc(b.x, b.y, 14 * dpr, 0, Math.PI * 2)
+          ctx.fill()
+          // 区間の内側を指す三角(起点=右向き, 終点=左向き)
+          const dir = b.grab === 'anchor' ? 1 : -1
+          ctx.fillStyle = '#0f1115'
+          ctx.beginPath()
+          ctx.moveTo(b.x + dir * 7 * dpr, b.y)
+          ctx.lineTo(b.x - dir * 5 * dpr, b.y - 7 * dpr)
+          ctx.lineTo(b.x - dir * 5 * dpr, b.y + 7 * dpr)
+          ctx.closePath()
           ctx.fill()
         }
       }
       if (zone !== 'bottom' && visible(hx)) {
-        const r = 8 * dpr
-        ctx.fillStyle = cHead
+        const r = 16 * dpr
+        ctx.fillStyle = cHeadKnob
         ctx.beginPath()
         ctx.moveTo(hx, headKnobY - r)
         ctx.lineTo(hx + r, headKnobY)
@@ -286,10 +334,10 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
 
       // 触っているゾーンのつまみは、何を動かすか読めるようラベル付きタブにする(掴んだものは大きく)
       const tab = (x: number, y: number, text: string, color: string, active: boolean) => {
-        const fs = (active ? 15 : 12) * dpr
+        const fs = (active ? 17 : 14) * dpr
         ctx.font = `600 ${fs}px system-ui, -apple-system, "Hiragino Sans", sans-serif`
         const bw = ctx.measureText(text).width + 16 * dpr
-        const bh = fs + 12 * dpr
+        const bh = fs + 18 * dpr // 触ったときにつまみより小さくならない高さ
         const bx = Math.max(2 * dpr, Math.min(x - bw / 2, w - bw - 2 * dpr)) // 画面端で切れないよう寄せる
         ctx.fillStyle = color
         ctx.beginPath()
@@ -301,9 +349,9 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
         ctx.fillText(text, bx + bw / 2, y)
       }
       if (zone === 'top') {
-        for (const b of bars) if (visible(b.x)) tab(b.x, knobY, b.label, cWave, grab === b.grab)
+        for (const b of bars) if (visible(b.x)) tab(b.x, b.y, b.label, cBarKnob, grab === b.grab)
       } else if (zone === 'bottom' && visible(hx)) {
-        tab(hx, headKnobY, fmt(pos), cHead, grab === 'head')
+        tab(hx, headKnobY, fmt(pos), cHeadKnob, grab === 'head')
       }
 
       raf = requestAnimationFrame(draw)
@@ -360,21 +408,21 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       return clientY - rect.top < rect.height / 2 ? 'top' : 'bottom'
     }
     // そのゾーンで掴めるもの(なければ null)
-    const grabAt = (clientX: number, z: Zone): Grab | null => {
+    const grabAt = (clientX: number, clientY: number, z: Zone): Grab | null => {
       const { anchor, endPoint } = stateRef.current
       if (z === 'bottom') {
         return Math.abs(clientX - pxOf(engine.getPosition())) <= HANDLE_HIT_PX ? 'head' : null
       }
-      if (Math.abs(clientX - pxOf(anchor)) <= HANDLE_HIT_PX) return 'anchor'
-      if (endPoint != null && Math.abs(clientX - pxOf(endPoint)) <= HANDLE_HIT_PX) return 'end'
-      return null
-    }
-    const setView = (start: number, span: number) => {
-      const dur = stateRef.current.buffer?.duration ?? 0
-      const sp = Math.max(Math.min(MIN_SPAN, dur), Math.min(span, dur))
-      const st = Math.max(0, Math.min(start, dur - sp))
-      viewRef.current = { start: st, end: st + sp }
-      syncZoomed(sp, dur)
+      const nearAnchor = Math.abs(clientX - pxOf(anchor)) <= HANDLE_HIT_PX
+      const nearEnd = endPoint != null && Math.abs(clientX - pxOf(endPoint)) <= HANDLE_HIT_PX
+      if (nearAnchor && nearEnd) {
+        // 両方のバーが近いときは、触った高さに近いつまみを掴む
+        const rect = rectOf()
+        const ys = barKnobYs(rect.height)
+        return clientY - rect.top < (ys.anchor + ys.end) / 2 ? 'anchor' : 'end'
+      }
+      if (nearAnchor) return 'anchor'
+      return nearEnd ? 'end' : null
     }
 
     const startPinch = (xA: number, xB: number) => {
@@ -419,7 +467,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       moved = false
       zone = zoneAt(e.clientY)
       activeZoneRef.current = zone
-      const grab = grabAt(e.clientX, zone)
+      const grab = grabAt(e.clientX, e.clientY, zone)
       grabRef.current = grab
       g = grab ?? 'body'
       if (g === 'head') onScrubStart()
@@ -428,7 +476,7 @@ export const Waveform = forwardRef<WaveformHandle, Props>(function Waveform(
       if (!pointersRef.current.has(e.pointerId)) {
         // PC のホバー: 掴める位置だけカーソルを変える
         if (e.pointerType === 'mouse' && stateRef.current.buffer) {
-          canvas.style.cursor = grabAt(e.clientX, zoneAt(e.clientY)) ? 'ew-resize' : ''
+          canvas.style.cursor = grabAt(e.clientX, e.clientY, zoneAt(e.clientY)) ? 'ew-resize' : ''
         }
         return
       }

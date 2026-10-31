@@ -9,7 +9,9 @@
   --line: rgba(255, 255, 255, 0.08);
   --wave: #5dcaa5;
   --loop: rgba(93, 202, 165, 0.16);
-  --head: #f0997b;
+  /* 起点/終点・再生ヘッドの線とつまみ。波形に埋もれない色にする */
+  --bar-knob: #e8ecf1;
+  --head-knob: #c9704f;
   --axis: rgba(255, 255, 255, 0.14);
   --scrim-top: rgba(15, 17, 21, 0.86);
   --scrim-bottom: rgba(15, 17, 21, 0.92);
@@ -52,6 +54,9 @@ body {
   height: 100%;
   display: block;
   background: var(--bg);
+  /* スクロールはしない。曲の前後の余白を計算するため、セーフエリアを px で読み取る窓口 */
+  scroll-padding-left: var(--sa-left);
+  scroll-padding-right: var(--sa-right);
   touch-action: none;
   cursor: crosshair;
 }
@@ -129,7 +134,8 @@ body {
   background: linear-gradient(to top, var(--scrim-bottom) 60%, rgba(15, 17, 21, 0));
   pointer-events: none;
 }
-.dock > * { pointer-events: auto; }
+/* ボタン以外は波形へ通す(ボタンの脇でも再生ヘッドを掴めるように) */
+.dock .db { pointer-events: auto; }
 
 /* ドロワーを開いたらボタン群だけを左へ寄せ、開いたままでも操作できるようにする
    (時刻表示は動かさず残す。幅に余裕のある横置き/PCのみ) */
@@ -251,6 +257,42 @@ body {
 }
 .drow:not(:disabled):hover { border-color: var(--accent); }
 .drow:disabled { opacity: 0.35; cursor: default; }
+
+/* 記録した区間の一覧 */
+.rechead { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+.recclear {
+  padding: 4px 0;
+  border: none; background: none;
+  color: var(--accent2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.recrow { display: flex; align-items: center; gap: 6px; }
+.recitem {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.recitem:hover { border-color: var(--accent); }
+.recitem.on { border-color: var(--accent); color: var(--accent); }
+.rectempo { margin-left: auto; color: var(--dim); }
+.recdel {
+  flex: 0 0 36px;
+  height: 44px;
+  border: none; background: none;
+  color: var(--dim);
+  font-size: 14px;
+  cursor: pointer;
+}
 
 .dhint { margin: 0; font-size: 11px; line-height: 1.7; color: var(--dim); }
 

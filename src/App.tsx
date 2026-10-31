@@ -3,6 +3,10 @@ import { AudioEngine, type EngineState, type PrepareState } from './audio/AudioE
 import { Waveform, type WaveformHandle } from './components/Waveform'
 import { makeSampleWav } from './audio/sampleTone'
 import { fmt } from './format'
+import {
+  addSegment, emptyRecords, findSame, fingerprint, loadRecords, removeSegment, saveRecords,
+  type SavedSegment, type SegmentRecords,
+} from './segmentStore'
 
 const TEMPO_PRESETS = [0.35, 0.4, 0.5, 0.65, 0.8, 1.0]
 
@@ -14,6 +18,7 @@ export default function App() {
   if (!engineRef.current) engineRef.current = new AudioEngine()
   const engine = engineRef.current
   const waveRef = useRef<WaveformHandle>(null)
+  const dockRef = useRef<HTMLDivElement>(null)
 
   const [fileName, setFileName] = useState<string>('')
   const [buffer, setBuffer] = useState<AudioBuffer | null>(null)
@@ -28,6 +33,11 @@ export default function App() {
   const [anchor, setAnchor] = useState(0) // 起点
   const [endPoint, setEndPoint] = useState<number | null>(null) // 終点(練習時)
   const [history, setHistory] = useState<Segment[]>([])
+
+  // 記録した区間(ファイルごとに保持)
+  const [fileId, setFileId] = useState('')
+  const [records, setRecords] = useState<SegmentRecords>(emptyRecords)
+  const [saveFailed, setSaveFailed] = useState(false)
 
   // UI 状態
   const [menuOpen, setMenuOpen] = useState(false)
@@ -119,7 +129,11 @@ export default function App() {
     setError('')
     try {
       const data = await file.arrayBuffer()
+      const id = fingerprint(data) // デコードで data が使えなくなるので先に計算する
       const buf = await engine.load(data)
+      setFileId(id)
+      setRecords(loadRecords(id))
+      setSaveFailed(false)
       setFileName(file.name)
       setBuffer(buf)
       setTempo(1)
@@ -201,6 +215,27 @@ export default function App() {
     if (modeRef.current === 'practice') engine.setTempo(r)
   }
 
+  // ---- 区間の記録 ----
+
+  const commitRecords = (next: SegmentRecords) => {
+    setRecords(next)
+    setSaveFailed(!saveRecords(fileId, next))
+  }
+  const recordSegment = () => {
+    if (endPoint == null) return
+    commitRecords(addSegment(records, { start: anchor, end: endPoint, tempo }))
+  }
+  const recallSegment = (s: SavedSegment) => {
+    setTempo(s.tempo)
+    tempoRef.current = s.tempo // goPractice が参照するので先に更新する
+    goPractice(s.start, s.end, true)
+    waveRef.current?.fitTo(s.start, s.end)
+    setMenuOpen(false)
+  }
+  const deleteAllSegments = () => {
+    if (window.confirm('このファイルの記録をすべて削除しますか？')) commitRecords(emptyRecords())
+  }
+
   // ---- 波形コールバック(安定参照) ----
   const onSeek = useCallback((sec: number) => {
     engine.seek(sec)
@@ -233,6 +268,7 @@ export default function App() {
 
   const playing = state === 'playing'
   const segLen = endPoint != null ? endPoint - anchor : 0
+  const sameRecord = endPoint != null ? findSame(records, anchor, endPoint, tempo) : undefined
   const showRotate = portrait && !rotateDismissed
 
   return (
@@ -269,6 +305,7 @@ export default function App() {
             onScrubStart={onScrubStart}
             onScrubEnd={onScrubEnd}
             onZoomedChange={onZoomedChange}
+            dockRef={dockRef}
           />
 
           <div className="topbar">
@@ -281,7 +318,7 @@ export default function App() {
             )}
           </div>
 
-          <div className={`dock ${menuOpen ? 'shifted' : ''}`}>
+          <div ref={dockRef} className={`dock ${menuOpen ? 'shifted' : ''}`}>
             <div className="readout">
               <span className="time">{fmt(position)}</span>
               <span className="seg">
@@ -301,6 +338,9 @@ export default function App() {
                 <>
                   <button className="db main go" onClick={next}>次へ ▶</button>
                   <button className="db sub" onClick={redo}>取り直す</button>
+                  <button className="db sub" onClick={recordSegment} disabled={sameRecord != null}>
+                    {sameRecord ? `#${sameRecord.no} 記録済み` : '記録'}
+                  </button>
                 </>
               )}
               <button
@@ -346,6 +386,37 @@ export default function App() {
                   >{Math.round(p * 100)}%</button>
                 ))}
               </div>
+            </section>
+
+            <section className="dsec">
+              <div className="rechead">
+                <span>記録</span>
+                {records.segments.length > 0 && (
+                  <button className="recclear" onClick={deleteAllSegments}>全て削除</button>
+                )}
+              </div>
+              {records.segments.length === 0 ? (
+                <span className="note2">練習モードの「記録」で、区間とテンポを保存できます。</span>
+              ) : (
+                records.segments.map((s) => (
+                  <div className="recrow" key={s.no}>
+                    <button
+                      className={`recitem ${s.no === sameRecord?.no ? 'on' : ''}`}
+                      onClick={() => recallSegment(s)}
+                    >
+                      <strong>#{s.no}</strong>
+                      <span>{fmt(s.start)} → {fmt(s.end)}</span>
+                      <span className="rectempo">{Math.round(s.tempo * 100)}%</span>
+                    </button>
+                    <button
+                      className="recdel"
+                      onClick={() => commitRecords(removeSegment(records, s.no))}
+                      aria-label={`記録 ${s.no} を削除`}
+                    >✕</button>
+                  </div>
+                ))
+              )}
+              {saveFailed && <span className="note2 warn">端末に保存できませんでした。閉じると記録は消えます。</span>}
             </section>
 
             <section className="dsec">
